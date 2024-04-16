@@ -1,0 +1,21 @@
+{
+  "name": "json_tester_2",
+  "version": "1.0.0",
+  "main": "../../../../GptPilot/gpt-pilot/workspace/JSON_Tester_2 copy/index.js",
+  "directories": {
+    "test": "../../../../GptPilot/gpt-pilot/workspace/JSON_Tester_2 copy/tests"
+  },
+  "scripts": {
+    "setup": "node ../../../../GptPilot/gpt-pilot/workspace/JSON_Tester_2 copy/directorySetup.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "deep-diff": "^1.0.2",
+    "markdown-table": "^3.0.3",
+    "moment": "^2.30.1"
+  },
+  "description": ""
+}

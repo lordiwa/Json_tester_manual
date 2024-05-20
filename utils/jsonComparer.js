@@ -1,60 +1,190 @@
 const diff = require('deep-diff').diff;
 const fs = require('fs');
+const _ = require('lodash'); // Lodash library for deep cloning
+const keysToIgnore = ['referenceIdId','accessorialId','rateDetailId','addressId','logEntryId','noteId',
+  'partyId','rateItemId', 'timestamp','discountId','divisionId','commodityDetailId','ratingId', 'bolTstamp','updtts',
+  'oldDelDueDate','oldAdvDueDate','fullDelReportTs','fullDelPostedTs','dueDateChanged','dueDate', 'deliveryReported',
+  'deliveryPosted','delDueDate','custSuppEndTime','custSuppDueDate','custSuppBegTime','custSuppBegDate',
+  'committedTstamp','advDueDate','projApptDate','projAppPostedTs']
 /**
  * Compares two JSON objects and returns the differences.
  * @param {Object} originalObj - The original JSON object.
  * @param {Object} modifiedObj - The modified JSON object to compare against the original.
  * @returns {Array} An array of differences.
  */
+let currentObj
+let allTheTests = []
+let parityFilename, coverageFilename
 const compareJsonObjects = (originalObj, modifiedObj, filename) => {
-  const differences = diff(originalObj, modifiedObj)
+  // Create deep copies of the objects
+  const originalObjCopy = _.cloneDeep(originalObj);
+  const modifiedObjCopy = _.cloneDeep(modifiedObj);
 
-  if (!differences) {
-    console.log('No differences found.')
-    return;
-  }
-
+  // Delete the keys to ignore from the copied objects
+  keysToIgnore.forEach(key => {
+    delete originalObjCopy[key];
+    delete modifiedObjCopy[key];
+  });
+  currentObj = modifiedObjCopy
+  // Compare the copied objects
+  const differences = diff(originalObjCopy, modifiedObjCopy);
   convertToMd(differences, filename);
 }
 
-function convertToMd(differences, filename) {
-  let mdString = `# Differences\n\n`;
+function isJsonString(str) {
+  try {
+    JSON.parse(str);
+  } catch (e) {
+    return false;
+  }
+  return true;
+}
 
-  differences.forEach((diff, index) => {
-    // Parse the JSON strings in lhs and rhs to objects for detailed comparison
-    const lhsObj = JSON.parse(diff.lhs);
-    const rhsObj = JSON.parse(diff.rhs);
-    console.log("lhsObj",lhsObj)
-    console.log("rhsObj",rhsObj)
-    mdString += `## Difference ${index + 1}\n`;
-    Object.keys(lhsObj).forEach((key) => {
-      if (lhsObj[key] !== rhsObj[key]) {
-        mdString += `- **${key}**:\n  - Old Value: \`${JSON.stringify(lhsObj[key])}\`\n  - New Value: \`${JSON.stringify(rhsObj[key])}\`\n`
+// Step 1: Generate a markdown file with key-value pairs
+function generateFullCoverageMd(obj) {
+  let mdString = '';
+  let stack = [{ obj, path: '' }];
+  while (stack.length > 0) {
+  let { obj, path } = stack.pop();
+    if (isJsonString(obj)) {
+      obj = JSON.parse(obj);
+    }
+    for (let key in obj) {
+      if (typeof obj[key] === 'object' && obj[key] !== null) {
+        // If the value is an object or array, add it to the stack with the updated path
+        stack.push({ obj: obj[key], path: `${path}${key}.` });
+      } else {
+        // Generate a markdown line for the key-value pair
+        mdString += `- **${path}${key}** = '${obj[key]}'\n`;
       }
-    });
-    mdString += `\n`;
+    }
+  }
 
-  });
-  const currentFilename = filename.split('.')[0] + '.md'
-  console.log("Saving... ", currentFilename)
-  fs.writeFile('./Results/'+currentFilename, mdString, (err) => {
+  return mdString;
+}
+
+// Step 2: Convert the markdown file into a Postman collection
+function generateFullCoveragePostmanCollection(mdString) {
+  const regex = /- \*\*(.*?)\*\* = '(.*?)'/g;
+  let match;
+  const tests = [];
+
+  while ((match = regex.exec(mdString)) !== null) {
+    const [_, key, value] = match;
+    tests.push({
+      name: `Verify ${addBrackets(key)} contains the current value`,
+      key: addBrackets(key),
+      expected: value
+    });
+  }
+  const collection = generateFullPostmanCollection(tests);
+  //const collectionJson = JSON.stringify(collection, null, 4);
+
+  // Step 3: Save the Postman collection into the Results/Postman/ directory
+  fs.writeFile('./Results/Postman/'+ coverageFilename +'.json', collection, (err) => {
     if (err) {
-      console.error('Error writing to file:', err)
+      console.error('Error writing to file:', err);
     } else {
-      console.log('Markdown saved to '+ currentFilename)
+      console.log('Full coverage Postman collection saved successfully.');
     }
   });
-  // Create the 'postman' directory and write the file
-  const tests = parseDataAndCreateTests(mdString);
-  const collectionJson = generatePostmanCollection(tests);
-  const dirPath = './Results/Postman/API_Response_Changes.postman_collection.json'
-
-  fs.mkdirSync('./Results/Postman/', { recursive: true });
-  fs.writeFileSync(dirPath, collectionJson);
-
-  console.log('Postman collection created successfully.');
-  return mdString
 }
+
+
+function convertToMd(differences, filename) {
+  if (typeof differences !== "undefined") {
+    let mdString = `# Differences\n\n`;
+    const currentFilename = filename.split('.')[0] + '.md';
+    parityFilename = 'par_'+filename.split('.')[0]
+    coverageFilename = 'full_'+filename.split('.')[0]
+    differences.forEach((diff, index) => {
+      const lhsObj = JSON.parse(diff.lhs);
+      const rhsObj = JSON.parse(diff.rhs);
+      mdString += `## Difference ${index + 1}\n`;
+      mdString += processKeys(lhsObj, rhsObj, currentFilename);
+      mdString += `\n`;
+    });
+  }
+  generatePostmanCollection(allTheTests)
+  const fullMdString = generateFullCoverageMd(currentObj);
+  generateFullCoveragePostmanCollection(fullMdString);
+}
+
+function processKeys(lhsObj, rhsObj, filename, fatherName="") {
+  let mdString = '';
+  const currentFilename = filename.split('.')[0];
+  Object.keys(lhsObj).forEach((key) => {
+    let oldVal = lhsObj[key];
+    let newVal = rhsObj[key];
+
+    // Check if the value is a string that can be parsed into an object or array
+    if (typeof oldVal === 'string' && (oldVal.startsWith('{') || oldVal.startsWith('['))) {
+      try {
+        oldVal = JSON.parse(oldVal);
+      } catch (e) {
+        console.error(`Error parsing oldVal for key ${key}:`, e);
+      }
+    }
+    if (typeof newVal === 'string' && (newVal.startsWith('{') || newVal.startsWith('['))) {
+      try {
+        newVal = JSON.parse(newVal);
+      } catch (e) {
+        console.error(`Error parsing newVal for key ${key}:`, e);
+      }
+    }
+    // here we set the name and verify if it's a number to parse it correctly
+    let keyFullName
+    // check if it's a number
+    if (!isNaN(parseInt(key))){
+      keyFullName = fatherName!== '' ? fatherName+"["+key+"]" : "["+key+"]"
+    } else{
+      keyFullName = fatherName!== '' ? fatherName+"."+key:key
+    }
+    if (typeof oldVal === 'object' && typeof newVal === 'object') {
+      processKeys(oldVal, newVal, currentFilename+'_'+key+".md", keyFullName);
+    } else if(oldVal !== newVal){
+      if(keysToIgnore.find(k => k === key)){
+        console.log("SKIPPED", key)
+      } else {
+        mdString += `- **${keyFullName}**:\n  - Old Value: \`${JSON.stringify(oldVal)}\`\n  - New Value: \`${JSON.stringify(newVal)}\`\n`;
+      }
+    }
+    if(mdString != ''){
+      allTheTests.push(parseDataAndCreateTests(mdString))
+    }
+  });
+  if (allTheTests.length > 0) {
+    allTheTests = allTheTests.flat()
+    allTheTests = [...new Set(allTheTests)];
+    return allTheTests
+  }
+
+}
+//
+// function writeToFile(filename, content) {
+//   if(content.toString().length >0){
+//     fs.writeFile('./Results/'+filename, content, (err) => {
+//       if (err) {
+//         console.error('Error writing to file:', err);
+//       } else {
+//         const testsToSave = parseDataAndCreateTests(content)
+//         fs.writeFile('./Results/Postman/'+filename.split('.')[0]+'.json', testsToSave, (err) => {
+//           if (err) {
+//             console.error('Error writing to file:', err);
+//           } else {
+//             parseDataAndCreateTests(content)
+//           }
+//         });
+//       }
+//     });
+//   } else {
+//     // Here we create tests for all keys using the current value
+//     // const mdString = generateFullCoverageMd(currentObj);
+//     // console.log("this is the mdString", mdString)
+//     // generateFullCoveragePostmanCollection(mdString);
+//   }
+//
+// }
 
 function parseDataAndCreateTests(input) {
   const regex = /- \*\*(.*?)\*\*:\n  - Old Value: `(.*)`\n  - New Value: `(.*)`/g;
@@ -64,75 +194,260 @@ function parseDataAndCreateTests(input) {
   while ((match = regex.exec(input)) !== null) {
     const [_, key, oldValue, newValue] = match;
     tests.push({
-      name: `Verify ${key} has changed correctly`,
+      name: `Verify ${addBrackets(key)} has changed correctly`,
       key: key,
       expected: newValue
     });
   }
-
-  return tests;
+  const theTests = generatePostmanTests(tests)
+  return theTests
 }
 
-function generatePostmanCollection(tests) {
+function addBrackets(str) {
+  return str.replace(/\.(\d+)/g, '[$1]');
+}
+
+function generateFullPostmanCollection(tests) {
+  let currentTests = []
+  tests.forEach((test) => {
+    const name = test.name;
+    const key = addBrackets(test.key);
+    const expected = test.expected;
+    const elementToAdd = "pm.test("
+        +"'"+name+"'"
+        +", function() {"
+        +"\n const testingElement = pm.response.json().assetRating."
+        +key+";"
+        +"\n pm.expect(testingElement.toString()).to.equal('"
+        + expected + "');" +"\n});"
+    currentTests.push(elementToAdd)
+  })
+  let currentTestsString = JSON.stringify(currentTests);
+  let currentTestsObject = JSON.parse(currentTestsString);
   const collection = {
     info: {
-      name: "API Response Changes",
+      name: 'Test_Pro_'+ coverageFilename ,
       schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
     },
-    item: tests.map(test => ({
-      name: test.name,
+    item: {
+      name: 'Test_Pro_'+ coverageFilename,
       event: [{
         listen: "test",
         script: {
-          exec: [
-            `pm.test("${test.name}", function() {`,
-            `    pm.expect(pm.response.json().${test.key}).to.eql("${test.expected}");`,
-            `});`
-          ],
+          exec: currentTestsObject,
           type: "text/javascript"
         }
       }],
       request: {
-        method: "GET",
-        url: "http://example.com/api", // You need to replace this with the actual API URL
-        description: `Tests if the ${test.key} has changed to ${test.expected}`
+        method: "POST",
+        url: "{{baseUrl}}/Pricing/AssetPricing", // You need to replace this with the actual API URL
+        description: "Tests if the Golden Standard Values are as expected.",
+        header: [
+          {
+            key: "x-consumer-id",
+            value: "QA",
+            type: "default"
+          }
+        ],
+        body: {
+          mode: "raw",
+          raw: "",
+          options: {
+            raw: {
+              language: "json"
+            }
+          }
+        },
+        url: {
+          raw: "{{baseUrl}}/Pricing/AssetPricing",
+          host: [
+            "{{baseUrl}}"
+          ],
+          path: [
+            "Pricing",
+            "AssetPricing"
+          ]
+        }
       }
-    }))
+    },
+    auth: {
+      type: "apikey",
+      apikey: [
+        {
+          key: "value",
+          value: "31659299-806b-4797-9981-6228e09e9657",
+          type: "string"
+        },
+        {
+          key: "key",
+          value: "x-api-key",
+          type: "string"
+        }
+      ]
+    },
+    event: [
+      {
+        listen: "prerequest",
+        script: {
+          type: "text/javascript",
+          exec: [
+            ""
+          ]
+        }
+      },
+      {
+        listen: "test",
+        script: {
+          type: "text/javascript",
+          exec: [
+            ""
+          ]
+        }
+      }
+    ],
+    variable: [
+      {
+        key: "baseUrl",
+        value: "https://testapps.dtc.corp/Rating/V2/API",
+        type: "string"
+      }
+    ]
   }
 
   return JSON.stringify(collection, null, 4);
 }
 
+function generatePostmanTests(tests) {
+  let currentTests = []
+  tests.forEach((test) => {
+    const name = test.name;
+    const key = addBrackets(test.key);
+    let expected = test.expected;
+    // remove "" from the expected value
+    if (expected.startsWith('"') && expected.endsWith('"')) {
+      expected = expected.substring(1, expected.length - 1);
+    }
+    const elementToAdd = "pm.test("
+        +"'"+name+"'"
+        +", function() {"
+        +"\n const testingElement = pm.response.json().assetRating."
+        +key+";"
+        +"\n pm.expect(testingElement.toString()).to.equal('"
+        + expected + "');" +"\n});"
+    currentTests.push(elementToAdd)
+  })
 
-function parseMarkdown(mdFilePath) {
-  const content = fs.readFileSync(mdFilePath, 'utf8');
-  const differenceBlocks = content.split('## Difference').slice(1); // Split and ignore the first empty result
-  return differenceBlocks.map(block => {
-    const lines = block.trim().split('\n').filter(line => line.startsWith('- **'));
-    return lines.map(line => {
-      const [property, oldNewValue] = line.split(':').map(part => part.trim());
-      const propertyClean = property.slice(3, -3); // Remove "- **" and "**"
-      const values = oldNewValue.split('`').map(part => part.trim());
-      return { property: propertyClean, old: values[1], new: values[3] };
-    });
-  });
+  let currentTestsString = JSON.stringify(currentTests);
+  let currentTestsObject = JSON.parse(currentTestsString);
+  return currentTestsObject
 }
 
-// Function to generate Gherkin files from parsed differences
-function generateGherkinFiles(differences, outputDir) {
-  differences.forEach((diffSet, index) => {
-    diffSet.forEach(diff => {
-      const filename = `${diff.property.replace(/\s+/g, '_')}_${index + 1}.feature`;
-      const gherkinContent = `Feature: Validate ${diff.property} change\n\n` +
-          `Scenario: Change detected in ${diff.property}\n` +
-          `  Given: ${filename}\n` +
-          `  When: "${diff.old}"\n` +
-          `  Then: "${diff.new}"\n`;
-      fs.writeFileSync(path.join(outputDir, filename), gherkinContent);
-    });
-  });
-}
+function generatePostmanCollection(tests) {
+  let currentTests = tests
+  let currentTestsString = JSON.stringify(currentTests);
+  let currentTestsObject = JSON.parse(currentTestsString);
 
+  const collection = {
+    info: {
+      name: 'Test_Pro_'+ parityFilename,
+      schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    item: {
+      name: 'Test_Pro_'+ parityFilename,
+      event: [{
+        listen: "test",
+        script: {
+          exec: currentTestsObject,
+          type: "text/javascript"
+        }
+      }],
+      request: {
+        method: "POST",
+        url: "{{baseUrl}}/Pricing/AssetPricing", // You need to replace this with the actual API URL
+        description: "Parity tests for the API response. Generated Postman Tests",
+        header: [
+          {
+            key: "x-consumer-id",
+            value: "QA",
+            type: "default"
+          }
+        ],
+        body: {
+          mode: "raw",
+          raw: "",
+          options: {
+            raw: {
+              language: "json"
+            }
+          }
+        },
+        url: {
+          raw: "{{baseUrl}}/Pricing/AssetPricing",
+          host: [
+            "{{baseUrl}}"
+          ],
+          path: [
+            "Pricing",
+            "AssetPricing"
+          ]
+        }
+      }
+    },
+    auth: {
+      type: "apikey",
+      apikey: [
+        {
+          key: "value",
+          value: "31659299-806b-4797-9981-6228e09e9657",
+          type: "string"
+        },
+        {
+          key: "key",
+          value: "x-api-key",
+          type: "string"
+        }
+      ]
+    },
+    event: [
+      {
+        listen: "prerequest",
+        script: {
+          type: "text/javascript",
+          exec: [
+            ""
+          ]
+        }
+      },
+      {
+        listen: "test",
+        script: {
+          type: "text/javascript",
+          exec: [
+            ""
+          ]
+        }
+      }
+    ],
+    variable: [
+      {
+        key: "baseUrl",
+        value: "https://testapps.dtc.corp/Rating/V2/API",
+        type: "string"
+      }
+    ]
+  }
+
+  // Step 3: Save the Postman collection into the Results/Postman/ directory
+  fs.writeFile('./Results/Postman/'+ parityFilename +'.json', JSON.stringify(collection, null, 4), (err) => {
+    if (err) {
+      console.error('Error writing to file:', err);
+    } else {
+      console.log('Full coverage Postman collection saved successfully.');
+    }
+  });
+
+  return JSON.stringify(collection, null, 4);
+}
 module.exports = {
   compareJsonObjects
 };

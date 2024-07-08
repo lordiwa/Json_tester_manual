@@ -13,8 +13,12 @@ const keysToIgnore = ['referenceIdId','accessorialId','rateDetailId','addressId'
  * @returns {Array} An array of differences.
  */
 let currentObj
+//const initialKey = ""
+const initialKey = "assetRating."
 let allTheTests = []
 let parityFilename, coverageFilename
+let mdCompiled = []
+let differencesCount = 0
 const compareJsonObjects = (originalObj, modifiedObj, filename) => {
   // Create deep copies of the objects
   const originalObjCopy = _.cloneDeep(originalObj);
@@ -72,7 +76,7 @@ function generateFullCoveragePostmanCollection(mdString) {
   while ((match = regex.exec(mdString)) !== null) {
     const [_, key, value] = match;
     tests.push({
-      name: `Verify ${addBrackets(key)} contains the current value`,
+      name: `Verify ${addBrackets(key)} contains ${value}`,
       key: addBrackets(key),
       expected: value
     });
@@ -92,6 +96,7 @@ function generateFullCoveragePostmanCollection(mdString) {
 
 
 function convertToMd(differences, filename) {
+  coverageFilename = 'full_'+filename.split('.')[0]
   if (typeof differences !== "undefined") {
     let mdString = `# Differences\n\n`;
     const currentFilename = filename.split('.')[0] + '.md';
@@ -104,7 +109,37 @@ function convertToMd(differences, filename) {
       mdString += processKeys(lhsObj, rhsObj, currentFilename);
       mdString += `\n`;
     });
+    // using a forEach concatenate mdCompiled and store it in mdCompiledString
+    let mdCompiledString = ''
+    mdCompiled.forEach((element) => {
+        mdCompiledString += element
+    })
+    let compiledArray = mdCompiledString.split('-b-')
+    //remove repeated elements in the array
+    compiledArray = [...new Set(compiledArray)]
+    mdCompiledString = ''
+    compiledArray.forEach((element) => {
+      mdCompiledString += element + '\n---\n'
+    })
+    differencesCount = compiledArray.length - 1
+    const mdStringTosend = '**ProNumber**:'
+        + filename.split('.')[0]
+        + '\n'
+        + '**Differences Found**:'
+        + differencesCount
+        + '\n---\n'
+        + mdCompiledString
+    const filePath = './Results/MdResults/'+ currentFilename
+    fs.writeFile(filePath, mdStringTosend, (err) => {
+      if (err) {
+        console.error('Error writing to file:', err);
+      } else {
+        console.log(`Markdown file saved successfully at ${filePath}`);
+      }
+    });
   }
+
+
   generatePostmanCollection(allTheTests)
   const fullMdString = generateFullCoverageMd(currentObj);
   generateFullCoveragePostmanCollection(fullMdString);
@@ -146,10 +181,11 @@ function processKeys(lhsObj, rhsObj, filename, fatherName="") {
       if(keysToIgnore.find(k => k === key)){
         console.log("SKIPPED", key)
       } else {
-        mdString += `- **${keyFullName}**:\n  - Old Value: \`${JSON.stringify(oldVal)}\`\n  - New Value: \`${JSON.stringify(newVal)}\`\n`;
+        mdString += `-b-- **${keyFullName}**:\n  - Old Value: \`${JSON.stringify(oldVal)}\`\n  - New Value: \`${JSON.stringify(newVal)}\`\n`;
       }
     }
     if(mdString != ''){
+      mdCompiled.push(mdString)
       allTheTests.push(parseDataAndCreateTests(mdString))
     }
   });
@@ -160,31 +196,6 @@ function processKeys(lhsObj, rhsObj, filename, fatherName="") {
   }
 
 }
-//
-// function writeToFile(filename, content) {
-//   if(content.toString().length >0){
-//     fs.writeFile('./Results/'+filename, content, (err) => {
-//       if (err) {
-//         console.error('Error writing to file:', err);
-//       } else {
-//         const testsToSave = parseDataAndCreateTests(content)
-//         fs.writeFile('./Results/Postman/'+filename.split('.')[0]+'.json', testsToSave, (err) => {
-//           if (err) {
-//             console.error('Error writing to file:', err);
-//           } else {
-//             parseDataAndCreateTests(content)
-//           }
-//         });
-//       }
-//     });
-//   } else {
-//     // Here we create tests for all keys using the current value
-//     // const mdString = generateFullCoverageMd(currentObj);
-//     // console.log("this is the mdString", mdString)
-//     // generateFullCoveragePostmanCollection(mdString);
-//   }
-//
-// }
 
 function parseDataAndCreateTests(input) {
   const regex = /- \*\*(.*?)\*\*:\n  - Old Value: `(.*)`\n  - New Value: `(.*)`/g;
@@ -194,7 +205,7 @@ function parseDataAndCreateTests(input) {
   while ((match = regex.exec(input)) !== null) {
     const [_, key, oldValue, newValue] = match;
     tests.push({
-      name: `Verify ${addBrackets(key)} has changed correctly`,
+      name: `Verify ${addBrackets(key)} equals ${newValue}`,
       key: key,
       expected: newValue
     });
@@ -216,9 +227,9 @@ function generateFullPostmanCollection(tests) {
     const elementToAdd = "pm.test("
         +"'"+name+"'"
         +", function() {"
-        +"\n const testingElement = pm.response.json().assetRating."
+        +"\n const testingElement = pm.response.json()." + initialKey
         +key+";"
-        +"\n pm.expect(testingElement.toString()).to.equal('"
+        +"\n pm.expect(testingElement.toString(),'"+expected+"').to.equal('"
         + expected + "');" +"\n});"
     currentTests.push(elementToAdd)
   })
@@ -318,6 +329,7 @@ function generateFullPostmanCollection(tests) {
 }
 
 function generatePostmanTests(tests) {
+  // add descriptor for fails like this pm.expect(tariff,'tariff').to.equal(" ");
   let currentTests = []
   tests.forEach((test) => {
     const name = test.name;
@@ -330,13 +342,13 @@ function generatePostmanTests(tests) {
     const elementToAdd = "pm.test("
         +"'"+name+"'"
         +", function() {"
-        +"\n const testingElement = pm.response.json().assetRating."
+        +"\n const testingElement = pm.response.json()." + initialKey
         +key+";"
-        +"\n pm.expect(testingElement.toString()).to.equal('"
+        +"\n pm.expect(testingElement.toString(),'"+expected+"').to.equal('"
         + expected + "');" +"\n});"
     currentTests.push(elementToAdd)
   })
-
+  //pm.expect(tariff,'tariff').to.equal(" ");
   let currentTestsString = JSON.stringify(currentTests);
   let currentTestsObject = JSON.parse(currentTestsString);
   return currentTestsObject
